@@ -1,0 +1,12 @@
+rule cxx
+  command = g++ $flags $in -o $out
+
+rule nvcc
+  command = nvcc $flags $in -o $out
+
+flags = -O3 -std=c++11 
+
+build sha256.o: nvcc sha256.cu
+    flags = $flags -c
+
+build cuda_miner: nvcc cuda_miner.cu sha256.o

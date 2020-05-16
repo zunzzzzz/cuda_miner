@@ -1,0 +1,5 @@
+testcase/
+.ninja*
+*.out
+cuda_miner
+*.o
