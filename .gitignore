@@ -3,3 +3,4 @@ testcase/
 *.out
 cuda_miner
 *.o
+test.cpp

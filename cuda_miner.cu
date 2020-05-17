@@ -12,6 +12,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 
 #include <cassert>
 
@@ -29,6 +30,10 @@ typedef struct _block
     unsigned int nonce;
 }HashBlock;
 
+/////////////////// Global variable in GPU////////////////
+__device__ HashBlock block_gpu;
+__device__ SHA256 sha256_ctx_gpu;
+__device__ bool found = false;
 
 ////////////////////////   Utils   ///////////////////////
 
@@ -51,6 +56,8 @@ unsigned char decode(unsigned char c)
             return 0x0f;
         case '0' ... '9':
             return c-'0';
+        default:
+            return 0x0a;
     }
 }
 
@@ -68,7 +75,7 @@ void convert_string_to_little_endian_bytes(unsigned char* out, char *in, size_t 
     size_t s = 0;
     size_t b = string_len/2-1;
 
-    for(s, b; s < string_len; s+=2, --b)
+    for(; s < string_len; s+=2, --b)
     {
         out[b] = (unsigned char)(decode(in[s])<<4) + decode(in[s+1]);
     }
@@ -92,7 +99,14 @@ void print_hex_inverse(unsigned char* hex, size_t len)
         printf("%02x", hex[i]);
     }
 }
-
+__device__
+void print_hex_inverse_gpu(unsigned char* hex, size_t len)
+{
+    for(int i=len-1;i>=0;--i)
+    {
+        printf("%02x", hex[i]);
+    }
+}
 int little_endian_bit_comparison(const unsigned char *a, const unsigned char *b, size_t byte_len)
 {
     // compared from lowest bit
@@ -105,7 +119,19 @@ int little_endian_bit_comparison(const unsigned char *a, const unsigned char *b,
     }
     return 0;
 }
-
+__device__
+int little_endian_bit_comparison_gpu(const unsigned char *a, const unsigned char *b, size_t byte_len)
+{
+    // compared from lowest bit
+    for(int i=byte_len-1;i>=0;--i)
+    {
+        if(a[i] < b[i])
+            return -1;
+        else if(a[i] > b[i])
+            return 1;
+    }
+    return 0;
+}
 void getline(char *str, size_t len, FILE *fp)
 {
 
@@ -116,13 +142,19 @@ void getline(char *str, size_t len, FILE *fp)
 
 ////////////////////////   Hash   ///////////////////////
 
-void double_sha256(SHA256 *sha256_ctx, unsigned char *bytes, size_t len)
+void double_sha256_cpu(SHA256 *sha256_ctx, unsigned char *bytes, size_t len)
 {
     SHA256 tmp;
-    sha256(&tmp, (BYTE*)bytes, len);
-    sha256(sha256_ctx, (BYTE*)&tmp, sizeof(tmp));
+    sha256_cpu(&tmp, (BYTE*)bytes, len);
+    sha256_cpu(sha256_ctx, (BYTE*)&tmp, sizeof(tmp));
 }
-
+__device__
+void double_sha256_gpu(SHA256 *sha256_ctx, unsigned char *bytes, size_t len)
+{
+    SHA256 tmp;
+    sha256_gpu(&tmp, (BYTE*)bytes, len);
+    sha256_gpu(sha256_ctx, (BYTE*)&tmp, sizeof(tmp));
+}
 
 ////////////////////   Merkle Root   /////////////////////
 
@@ -168,7 +200,7 @@ void calc_merkle_root(unsigned char *root, int count, char **branch)
             // double_sha:
             //     tmp = hash(list[0]+list[1])
             //     list[0] = hash(tmp)
-            double_sha256((SHA256*)list[j], list[i], 64);
+            double_sha256_cpu((SHA256*)list[j], list[i], 64);
         }
 
         total_count = j;
@@ -179,11 +211,40 @@ void calc_merkle_root(unsigned char *root, int count, char **branch)
     delete[] raw_list;
     delete[] list;
 }
-
-
+__global__
+void FindNonce(unsigned char* target_hex)
+{   
+    int index = threadIdx.x + blockIdx.x * blockDim.x;
+    int stride = blockDim.x * gridDim.x;
+    HashBlock block_tmp = block_gpu;
+    SHA256 sha256_ctx_tmp = sha256_ctx_gpu;
+    for(block_tmp.nonce = 0x00000000 + index; block_tmp.nonce<=0xffffffff && found == false; block_tmp.nonce += stride)
+    {   
+        //sha256d
+        double_sha256_gpu(&sha256_ctx_tmp, (unsigned char*)&block_tmp, sizeof(block_tmp));
+        if(block_tmp.nonce % 1000000 == 0)
+        {
+            // printf("hash #%10u (big): ", block_tmp.nonce);
+            // print_hex_inverse_gpu(sha256_ctx_tmp.b, 32);
+            // printf("\n");
+        }
+        
+        if(little_endian_bit_comparison_gpu(sha256_ctx_tmp.b, target_hex, 32) < 0)  // sha256_ctx < target_hex
+        {
+            printf("Found Solution!!\n");
+            printf("hash #%10u (big): ", block_tmp.nonce);
+            print_hex_inverse_gpu(sha256_ctx_tmp.b, 32);
+            printf("\n\n");
+            found = true;
+            block_gpu = block_tmp;
+            sha256_ctx_gpu = sha256_ctx_tmp;
+        }
+    }
+}
 void solve(FILE *fin, FILE *fout)
 {
-
+    // clock_t start, stop;  
+    
     // **** read data *****
     char version[9];
     char prevhash[65];
@@ -207,9 +268,7 @@ void solve(FILE *fin, FILE *fout)
         getline(merkle_branch[i], 65, fin);
         merkle_branch[i][64] = '\0';
     }
-
     // **** calculate merkle root ****
-
     unsigned char merkle_root[32];
     calc_merkle_root(merkle_root, tx, merkle_branch);
 
@@ -232,6 +291,8 @@ void solve(FILE *fin, FILE *fout)
     printf("  nonce:    ???\n\n");
 
     HashBlock block;
+    
+
 
     // convert to byte array in little-endian
     convert_string_to_little_endian_bytes((unsigned char *)&block.version, version, 8);
@@ -246,8 +307,11 @@ void solve(FILE *fin, FILE *fout)
     // calculate target value from encoded difficulty which is encoded on "nbits"
     unsigned int exp = block.nbits >> 24;
     unsigned int mant = block.nbits & 0xffffff;
-    unsigned char target_hex[32] = {};
-    
+    // unsigned char target_hex[32] = {};
+    unsigned char* target_hex;
+    size_t size= sizeof(unsigned char) * 32;
+    cudaMallocManaged(&target_hex, size);
+
     unsigned int shift = 8 * (exp - 3);
     unsigned int sb = shift / 8;
     unsigned int rb = shift % 8;
@@ -263,33 +327,16 @@ void solve(FILE *fin, FILE *fout)
     print_hex_inverse(target_hex, 32);
     printf("\n");
 
-
     // ********** find nonce **************
-    
+    size_t threads_per_block = 256;
+    size_t num_of_blocks = 32 * 20;
     SHA256 sha256_ctx;
-    
-    for(block.nonce=0x00000000; block.nonce<=0xffffffff;++block.nonce)
-    {   
-        //sha256d
-        double_sha256(&sha256_ctx, (unsigned char*)&block, sizeof(block));
-        if(block.nonce % 1000000 == 0)
-        {
-            printf("hash #%10u (big): ", block.nonce);
-            print_hex_inverse(sha256_ctx.b, 32);
-            printf("\n");
-        }
-        
-        if(little_endian_bit_comparison(sha256_ctx.b, target_hex, 32) < 0)  // sha256_ctx < target_hex
-        {
-            printf("Found Solution!!\n");
-            printf("hash #%10u (big): ", block.nonce);
-            print_hex_inverse(sha256_ctx.b, 32);
-            printf("\n\n");
-
-            break;
-        }
-    }
-    
+    cudaMemcpyToSymbol(block_gpu, &block, sizeof(HashBlock), 0, cudaMemcpyHostToDevice);
+    cudaMemcpyToSymbol(sha256_ctx_gpu, &sha256_ctx, sizeof(SHA256), 0, cudaMemcpyHostToDevice);
+    FindNonce<<<num_of_blocks, threads_per_block>>>(&target_hex[0]);
+    cudaMemcpyFromSymbol(&block, block_gpu, sizeof(HashBlock), 0, cudaMemcpyDeviceToHost);
+    cudaMemcpyFromSymbol(&sha256_ctx, sha256_ctx_gpu, sizeof(SHA256), 0, cudaMemcpyDeviceToHost);
+    cudaDeviceSynchronize();
 
     // print result
 

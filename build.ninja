@@ -7,6 +7,9 @@ rule nvcc
 flags = -O3 -std=c++11 
 
 build sha256.o: nvcc sha256.cu
-    flags = $flags -c
+    flags = $flags -c -dc
 
-build cuda_miner: nvcc cuda_miner.cu sha256.o
+build main.o: nvcc cuda_miner.cu
+    flags = $flags -c -dc
+
+build cuda_miner: nvcc main.o sha256.o
