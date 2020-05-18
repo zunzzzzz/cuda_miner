@@ -367,6 +367,7 @@ void solve(FILE *fin, FILE *fout)
 
     delete[] merkle_branch;
     delete[] raw_merkle_branch;
+    cudaDeviceReset();
 }
 
 int main(int argc, char **argv)
