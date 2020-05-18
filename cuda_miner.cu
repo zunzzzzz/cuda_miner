@@ -335,9 +335,11 @@ void solve(FILE *fin, FILE *fout)
     
     size_t threads_per_block = 128;
     size_t num_of_blocks = 50 * 3;
+    bool is_found = false;
     SHA256 sha256_ctx;
     cudaMemcpyToSymbol(block_gpu, &block, sizeof(HashBlock), 0, cudaMemcpyHostToDevice);
     cudaMemcpyToSymbol(sha256_ctx_gpu, &sha256_ctx, sizeof(SHA256), 0, cudaMemcpyHostToDevice);
+    cudaMemcpyToSymbol(found, &is_found, sizeof(bool), 0, cudaMemcpyHostToDevice);
     FindNonce<<<num_of_blocks, threads_per_block>>>(&target_hex[0]);
     cudaMemcpyFromSymbol(&block, block_gpu, sizeof(HashBlock), 0, cudaMemcpyDeviceToHost);
     cudaMemcpyFromSymbol(&sha256_ctx, sha256_ctx_gpu, sizeof(SHA256), 0, cudaMemcpyDeviceToHost);
