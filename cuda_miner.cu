@@ -216,14 +216,17 @@ void FindNonce(unsigned char* target_hex)
 {   
     int index = threadIdx.x + blockIdx.x * blockDim.x;
     int stride = blockDim.x * gridDim.x;
+    // printf("%d %d %d %d\n", blockDim.x, gridDim.x, stride, blockIdx.x);
     HashBlock block_tmp = block_gpu;
     SHA256 sha256_ctx_tmp = sha256_ctx_gpu;
-    for(block_tmp.nonce = 0x00000000 + index; block_tmp.nonce<=0xffffffff && found == false; block_tmp.nonce += stride)
+    __syncthreads();
+    for(block_tmp.nonce = index; block_tmp.nonce<=0xffffffff && found == false; block_tmp.nonce += stride)
     {   
         //sha256d
         double_sha256_gpu(&sha256_ctx_tmp, (unsigned char*)&block_tmp, sizeof(block_tmp));
         if(block_tmp.nonce % 1000000 == 0)
         {
+            // printf("index : %d,", index);
             // printf("hash #%10u (big): ", block_tmp.nonce);
             // print_hex_inverse_gpu(sha256_ctx_tmp.b, 32);
             // printf("\n");
@@ -243,7 +246,7 @@ void FindNonce(unsigned char* target_hex)
 }
 void solve(FILE *fin, FILE *fout)
 {
-    // clock_t start, stop;  
+    clock_t start, stop;  
     
     // **** read data *****
     char version[9];
@@ -328,8 +331,10 @@ void solve(FILE *fin, FILE *fout)
     printf("\n");
 
     // ********** find nonce **************
-    size_t threads_per_block = 256;
-    size_t num_of_blocks = 32 * 20;
+    start = clock();
+    
+    size_t threads_per_block = 128;
+    size_t num_of_blocks = 50 * 3;
     SHA256 sha256_ctx;
     cudaMemcpyToSymbol(block_gpu, &block, sizeof(HashBlock), 0, cudaMemcpyHostToDevice);
     cudaMemcpyToSymbol(sha256_ctx_gpu, &sha256_ctx, sizeof(SHA256), 0, cudaMemcpyHostToDevice);
@@ -338,6 +343,8 @@ void solve(FILE *fin, FILE *fout)
     cudaMemcpyFromSymbol(&sha256_ctx, sha256_ctx_gpu, sizeof(SHA256), 0, cudaMemcpyDeviceToHost);
     cudaDeviceSynchronize();
 
+    stop = clock();
+    std::cout << (stop - start) / CLOCKS_PER_SEC << std::endl;
     // print result
 
     //little-endian
